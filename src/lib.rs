@@ -107,6 +107,9 @@ pub use ruma_client_api as api;
 pub use ruma_events as events;
 pub use ruma_identifiers as identifiers;
 
+use std::time::Duration;
+use async_std::task::sleep;
+
 /// Matrix client-server API endpoints.
 //pub mod api;
 mod error;
@@ -123,6 +126,8 @@ struct ClientData<C> {
     homeserver_url: Url,
     /// The underlying HTTP client.
     hyper: HyperClient<C>,
+    // The maximum time to wait, before returning sync request.
+    timeout: Option<Duration>,
     /// User session data.
     session: Mutex<Option<Session>>,
 }
@@ -137,18 +142,8 @@ impl HttpClient {
             homeserver_url,
             hyper: HyperClient::builder().keep_alive(true).build_http(),
             session: Mutex::new(session),
+            timeout: None
         }))
-    }
-
-    /// Get a copy of the current `Session`, if any.
-    ///
-    /// Useful for serializing and persisting the session to be restored later.
-    pub fn session(&self) -> Option<Session> {
-        self.0
-            .session
-            .lock()
-            .expect("session mutex was poisoned")
-            .clone()
     }
 }
 
@@ -166,6 +161,7 @@ impl HttpsClient {
             homeserver_url,
             hyper: HyperClient::builder().keep_alive(true).build(connector),
             session: Mutex::new(session),
+            timeout: None
         }))
     }
 }
@@ -181,12 +177,25 @@ where
         hyper_client: HyperClient<C>,
         homeserver_url: Url,
         session: Option<Session>,
+        timeout: Option<Duration>,
     ) -> Self {
         Self(Arc::new(ClientData {
             homeserver_url,
             hyper: hyper_client,
+            timeout,
             session: Mutex::new(session),
         }))
+    }
+
+    /// Get a copy of the current `Session`, if any.
+    ///
+    /// Useful for serializing and persisting the session to be restored later.
+    pub fn session(&self) -> Option<Session> {
+        self.0
+            .session
+            .lock()
+            .expect("session mutex was poisoned")
+            .clone()
     }
 
     /// Log in with a username and password.
@@ -332,14 +341,13 @@ where
                     State::Since(s) => Some(s),
                     State::InitialSync => None,
                 };
-
                 let res = client
                     .request(sync_events::Request {
                         filter,
-                        since,
+                        since: since.clone(),
                         full_state: None,
                         set_presence,
-                        timeout: None,
+                        timeout: match client.0.timeout {Some(t) => Some((t.as_millis() as u32).into()), None => None},
                     })
                     .await;
 
